@@ -1,0 +1,154 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: nestjs-api
+  EKS_CLUSTER_NAME: nestjs-cluster
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: apps/api/package-lock.json
+
+    - name: Install dependencies
+      run: |
+        cd apps/api
+        npm ci
+
+    - name: Run linting
+      run: |
+        cd apps/api
+        npm run lint
+
+    - name: Run tests
+      run: |
+        cd apps/api
+        npm run test
+
+  build-and-push-dev:
+    name: Build and Push to Dev ECR
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials for Dev
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.DEV_AWS_ACCOUNT_ID }}:role/github-actions-ecr-role
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR Dev
+      id: login-ecr-dev
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR Dev
+      env:
+        ECR_REGISTRY_DEV: ${{ steps.login-ecr-dev.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        cd apps/api
+        docker build -t $ECR_REGISTRY_DEV/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY_DEV/$ECR_REPOSITORY:latest .
+        docker push $ECR_REGISTRY_DEV/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY_DEV/$ECR_REPOSITORY:latest
+        echo "image=$ECR_REGISTRY_DEV/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Deploy to Dev EKS
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}-dev
+        kubectl set image deployment/nestjs-api nestjs-api=${{ steps.login-ecr-dev.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }} -n default
+
+  promote-to-prod:
+    name: Promote to Production
+    needs: build-and-push-dev
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials for Dev (source)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.DEV_AWS_ACCOUNT_ID }}:role/github-actions-ecr-role
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Configure AWS credentials for Prod (destination)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::${{ secrets.PROD_AWS_ACCOUNT_ID }}:role/github-actions-ecr-role
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR Dev
+      id: login-ecr-dev
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Login to Amazon ECR Prod
+      id: login-ecr-prod
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Pull, tag, and push image to Amazon ECR Prod
+      env:
+        ECR_REGISTRY_DEV: ${{ steps.login-ecr-dev.outputs.registry }}
+        ECR_REGISTRY_PROD: ${{ steps.login-ecr-prod.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Pull image from dev ECR
+        docker pull $ECR_REGISTRY_DEV/$ECR_REPOSITORY:$IMAGE_TAG
+        
+        # Tag for prod ECR
+        docker tag $ECR_REGISTRY_DEV/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY_PROD/$ECR_REPOSITORY:$IMAGE_TAG
+        docker tag $ECR_REGISTRY_DEV/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY_PROD/$ECR_REPOSITORY:latest
+        
+        # Push to prod ECR
+        docker push $ECR_REGISTRY_PROD/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY_PROD/$ECR_REPOSITORY:latest
+
+    - name: Deploy to Prod EKS
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}-prod
+        kubectl set image deployment/nestjs-api nestjs-api=${{ steps.login-ecr-prod.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }} -n default
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'apps/api'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif' 

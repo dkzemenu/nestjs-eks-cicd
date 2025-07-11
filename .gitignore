@@ -1,0 +1,26 @@
+# Node
+node_modules/
+dist/
+.nyc_output/
+coverage/
+.env*
+*.log
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+
+# Kubernetes
+*.yaml~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Others
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log* 
