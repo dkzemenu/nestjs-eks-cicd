@@ -283,6 +283,10 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Pull image from ECR
+      run: |
+        docker pull ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+
     - name: Run Trivy vulnerability scanner
       uses: aquasecurity/trivy-action@master
       with:
