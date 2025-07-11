@@ -22,6 +22,14 @@ export class UsersService {
       createdAt: new Date('2024-01-02'),
       updatedAt: new Date('2024-01-02'),
     },
+    {
+      id: '2',
+      email: 'dil.smith@example.com',
+      firstName: 'dilu',
+      lastName: 'Smith',
+      createdAt: new Date('2023-01-02'),
+      updatedAt: new Date('2024-01-02'),
+    },
   ];
 
   async create(createUserDto: CreateUserDto): Promise<UserDto> {
